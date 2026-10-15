@@ -1,0 +1,237 @@
+*claude-tour.txt*  Step through notes above the code
+
+==============================================================================
+CONTENTS                                                *claude-tour-contents*
+
+  1. Introduction ........................... |claude-tour-introduction|
+  2. Setup .................................. |claude-tour-setup|
+  3. Commands ............................... |claude-tour-commands|
+  4. Tour format ............................ |claude-tour-format|
+  5. Options ................................ |claude-tour-options|
+  6. Highlights ............................. |claude-tour-highlights|
+  7. Lua API ................................ |claude-tour-api|
+  8. Load a tour from outside Neovim ........ |claude-tour-remote|
+
+==============================================================================
+1. INTRODUCTION                                     *claude-tour-introduction*
+
+claude-tour shows a guided tour through code. A tour is a list of steps. Each
+step points to a file and a line and has one or more lines of text.
+
+The plugin shows each step as virtual lines above its line. A sign in the
+sign column marks the lines that the step explains. The notes and signs are
+|extmarks|: they never change the file, and they move with the code when you
+edit the file.
+
+When Neovim reads a file of the tour again, the plugin sets the notes and
+signs of that file again from the lines in the tour. This happens when the
+file is reloaded after a change on disk (|:edit!|, 'autoread', |:checktime|)
+and when it is opened again after |:bdelete| or |:bwipeout|. Edits made since
+the tour was loaded are lost for these notes.
+
+One step is the current step. Its note and signs use |hl-ClaudeTourCurrent|,
+all other steps use |hl-ClaudeTourNote|. When the cursor is in the lines of a
+step, that step becomes the current step. This also works for jumps that the
+plugin does not make, for example from the |quickfix| list.
+
+Example, with the cursor on step 1 of 14: >
+
+  ┃ [1/14] Start: creates 128 uint32 values and 128 measurements.
+  ┃        Next: measurables.h:107 (constructor)
+  ┃  126   auto vars = Measurables<std::uint32_t, 128U>::Initialize();
+<
+==============================================================================
+2. SETUP                                                   *claude-tour-setup*
+
+The plugin defines its commands when Neovim starts. |claude_tour.setup()| is
+optional. With lazy.nvim: >lua
+
+  {
+    "woidpointer/claude-tour.nvim",
+    opts = {},
+  }
+<
+The plugin defines no key mappings. Example: >lua
+
+  vim.keymap.set("n", "]n", "<cmd>ClaudeTourNext<cr>")
+  vim.keymap.set("n", "[n", "<cmd>ClaudeTourPrev<cr>")
+<
+Do not use `]t` and `[t`: Neovim maps them to |:tnext| and |:tprevious|.
+
+==============================================================================
+3. COMMANDS                                             *claude-tour-commands*
+
+                                                             *:ClaudeTourLoad*
+:ClaudeTourLoad {name}
+    Load a tour from a JSON file. A {name} without "/" is a file in
+    |claude-tour-tour_dir|. The plugin adds ".json" unless {name} ends in
+    ".json". "~" and environment variables are expanded, "%" and "#" are
+    not. The command completes the tour names in
+    |claude-tour-tour_dir| and file names.
+
+                                                             *:ClaudeTourSave*
+:ClaudeTourSave {name}
+    Save the loaded tour. The file gets the positions that the notes and
+    signs have now, so a tour that you saved after editing the code still
+    points to the right lines. {name} works as for |:ClaudeTourLoad|.
+
+                                                             *:ClaudeTourNext*
+:ClaudeTourNext
+    Jump to the next step and make it the current step.
+
+                                                             *:ClaudeTourPrev*
+:ClaudeTourPrev
+    Jump to the previous step and make it the current step.
+
+                                                             *:ClaudeTourGoto*
+:ClaudeTourGoto {n}
+    Jump to step {n} and make it the current step.
+
+                                                           *:ClaudeTourToggle*
+:ClaudeTourToggle
+    Show or hide all notes and signs. The positions stay.
+
+                                                               *:ClaudeTourQf*
+:ClaudeTourQf
+    Put one entry per step into the |quickfix| list and open it. The text of
+    an entry is "[i/n]" and the first line of the step text.
+
+                                                            *:ClaudeTourClear*
+:ClaudeTourClear
+    Remove the tour, its notes and its signs.
+
+==============================================================================
+4. TOUR FORMAT                                            *claude-tour-format*
+
+A tour is a JSON file or a Lua table with the same fields: >json
+
+  {
+    "title": "simple_app",
+    "root": "/abs/path/to/project",
+    "steps": [
+      {"file": "src/main.cpp", "line": 126,
+       "text": ["Start: ...", "Next: ..."]},
+      {"file": "include/measurables.h", "line": 101, "end_line": 105,
+       "text": "Fold over all indices: ..."}
+    ]
+  }
+<
+title           Name of the tour, shown in the quickfix title.
+                Default: "claude-tour".
+root            Directory for relative file paths. "~" and environment
+                variables are expanded. Default: the current working
+                directory when the tour is loaded.
+steps[].file    Absolute path, or path relative to "root".
+steps[].line    Line number, an integer starting at 1. A number past the
+                end of the file goes to the last line.
+steps[].end_line
+                Optional. Last line that the step explains. Must be equal to
+                or greater than "line", an integer. Default: "line".
+steps[].text    A string or a list of strings. The first string is the text
+                in the quickfix list.
+
+The plugin puts "[i/n]" in front of the first line of each note. Do not
+number the steps in "text".
+
+==============================================================================
+5. OPTIONS                                               *claude-tour-options*
+
+Pass the options to |claude_tour.setup()|. The defaults: >lua
+
+  require("claude_tour").setup({
+    tour_dir = vim.fn.expand("~/develop/claude-tours"),
+    prefix = "┃ ",
+    leftcol = true,
+    sign = "┃",
+    sign_priority = 5,
+  })
+<
+                                                        *claude-tour-tour_dir*
+tour_dir        Directory for a tour {name} without "/".
+
+                                                          *claude-tour-prefix*
+prefix          Text in front of each note line.
+
+                                                         *claude-tour-leftcol*
+leftcol         true: a note starts in the leftmost screen column, above the
+                sign column. The first character of "prefix" then stands in
+                the same column as the sign, and both form one line.
+                false: a note starts in the text column.
+
+                                                            *claude-tour-sign*
+sign            Sign for the lines of a step. false shows no signs.
+
+                                                   *claude-tour-sign_priority*
+sign_priority   Priority of the sign. The signs of the current step get
+                this priority + 1, so they win where ranges overlap.
+                With 'signcolumn' set to "yes", Neovim shows one sign per
+                line: the sign with the highest priority. gitsigns uses
+                priority 6, diagnostics use 10 and more, so they hide the
+                tour sign on their lines. Set 'signcolumn' to "yes:2" to see
+                two signs per line.
+
+==============================================================================
+6. HIGHLIGHTS                                         *claude-tour-highlights*
+
+                                                       *hl-ClaudeTourCurrent*
+ClaudeTourCurrent   Note and signs of the current step.
+                    Default: links to |hl-DiagnosticInfo|.
+
+                                                          *hl-ClaudeTourNote*
+ClaudeTourNote      Notes and signs of all other steps.
+                    Default: links to `Comment`.
+
+==============================================================================
+7. LUA API                                                   *claude-tour-api*
+
+All functions are in the module "claude_tour".
+
+                                                        *claude_tour.setup()*
+setup({opts})       Set the options, see |claude-tour-options|.
+
+                                                         *claude_tour.load()*
+load({tour})        Load a tour from a Lua table, see |claude-tour-format|.
+                    Replaces a loaded tour. Returns true on success.
+
+                                                    *claude_tour.load_file()*
+load_file({name})   Same as |:ClaudeTourLoad|. Returns true on success.
+
+                                                    *claude_tour.save_file()*
+save_file({name})   Same as |:ClaudeTourSave|. Returns true on success.
+
+                                                         *claude_tour.next()*
+next()              Same as |:ClaudeTourNext|.
+
+                                                         *claude_tour.prev()*
+prev()              Same as |:ClaudeTourPrev|.
+
+                                                    *claude_tour.goto_step()*
+goto_step({n})      Same as |:ClaudeTourGoto|.
+
+                                                       *claude_tour.toggle()*
+toggle()            Same as |:ClaudeTourToggle|.
+
+                                                     *claude_tour.quickfix()*
+quickfix()          Same as |:ClaudeTourQf|.
+
+                                                        *claude_tour.clear()*
+clear()             Same as |:ClaudeTourClear|.
+
+==============================================================================
+8. LOAD A TOUR FROM OUTSIDE NEOVIM                        *claude-tour-remote*
+
+Start Neovim with a server socket, for example: >sh
+
+  nvim --listen /tmp/nvim.sock
+<
+Another program can then load a tour file: >sh
+
+  nvim --server /tmp/nvim.sock --remote-expr \
+    "luaeval('require(\"claude_tour\").load_file(_A)', '/abs/path/tour.json')"
+<
+or a Lua file that returns the tour table: >sh
+
+  nvim --server /tmp/nvim.sock --remote-expr \
+    "luaeval('require(\"claude_tour\").load(dofile(_A))', '/abs/tour.lua')"
+<
+ vim:tw=78:ts=8:noet:ft=help:norl:

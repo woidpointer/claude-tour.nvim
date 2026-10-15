@@ -23,6 +23,9 @@ When the cursor is in the lines of a step, that step becomes the current step. T
 from the quickfix list.
 
 When you edit a file, the notes move with the code. `:ClaudeTourSave` writes the positions they have now.
+When Neovim reads a file of the tour again (reload after a change on disk, or open again after `:bdelete`),
+the plugin sets the notes of that file again from the lines in the tour. Edits made since the tour was
+loaded are lost for these notes.
 
 ## Requirements
 
@@ -56,14 +59,14 @@ For a local checkout, use `dir = "/path/to/claude-tour.nvim"` instead of the rep
 | `:ClaudeTourQf` | Put one entry per step into the quickfix list and open it. |
 | `:ClaudeTourClear` | Remove the tour. |
 
-`{name}` without a `/` is a file in `tour_dir`. The plugin adds `.json` if the name has no extension.
+`{name}` without a `/` is a file in `tour_dir`. The plugin adds `.json` unless the name ends in `.json`.
 Both commands complete the names of the tours in `tour_dir` and file names.
 
 The plugin defines no key mappings. Example:
 
 ```lua
-vim.keymap.set("n", "]t", "<cmd>ClaudeTourNext<cr>", { desc = "Next tour step" })
-vim.keymap.set("n", "[t", "<cmd>ClaudeTourPrev<cr>", { desc = "Previous tour step" })
+vim.keymap.set("n", "]n", "<cmd>ClaudeTourNext<cr>", { desc = "Next tour step" })
+vim.keymap.set("n", "[n", "<cmd>ClaudeTourPrev<cr>", { desc = "Previous tour step" })
 vim.keymap.set("n", "<leader>tt", "<cmd>ClaudeTourToggle<cr>", { desc = "Toggle tour notes" })
 vim.keymap.set("n", "<leader>tq", "<cmd>ClaudeTourQf<cr>", { desc = "Tour steps in quickfix" })
 ```
@@ -123,6 +126,10 @@ nvim --server /tmp/nvim.sock --remote-expr \
 
 With `signcolumn=yes`, Neovim shows one sign per line: the sign with the highest priority. gitsigns uses
 priority 6 and hides the tour sign on changed lines. Set `vim.o.signcolumn = "yes:2"` to see both.
+
+## Help
+
+`:help claude-tour` has the full reference: commands, tour format, options, highlight groups and the Lua API.
 
 ## License
 

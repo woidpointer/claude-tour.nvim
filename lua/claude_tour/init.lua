@@ -21,7 +21,8 @@ M.config = {
 }
 
 -- state.tour: the loaded tour (title, root, steps)
--- state.marks[i]: { buf = <bufnr>, id = <extmark id of the note>, signs = { <extmark id per line> } } of step i
+-- state.marks[i]: { path = <absolute file path>, buf = <bufnr>, id = <extmark id of the note>,
+--                   signs = { <extmark id per line> } } of step i
 -- state.current: index of the current step, 0 before the first step
 -- state.visible: false hides the notes but keeps their positions
 local state = { tour = nil, marks = {}, current = 0, visible = true }
@@ -39,7 +40,13 @@ local function is_absolute(path)
   return path:sub(1, 1) == "/"
 end
 
+-- Expand "~" and environment variables, make the path absolute and remove a trailing "/".
+local function absolute(path)
+  return vim.fs.normalize(vim.fn.fnamemodify(vim.fs.normalize(path), ":p"))
+end
+
 local function resolve(root, file)
+  file = vim.fs.normalize(file)
   if is_absolute(file) then
     return file
   end
@@ -82,7 +89,8 @@ local function render_step(i)
       if state.visible and M.config.sign then
         sign_opts.sign_text = M.config.sign
         sign_opts.sign_hl_group = hl
-        sign_opts.priority = M.config.sign_priority
+        -- The current step gets a higher priority, so its sign wins on lines where ranges overlap.
+        sign_opts.priority = M.config.sign_priority + ((i == state.current) and 1 or 0)
       end
       vim.api.nvim_buf_set_extmark(buf, ns, pos[1], 0, sign_opts)
     end
@@ -125,20 +133,30 @@ local function normalize(tour)
   if type(tour) ~= "table" or type(tour.steps) ~= "table" or #tour.steps == 0 then
     return nil, "a tour needs a non-empty 'steps' list"
   end
-  local out = { title = tour.title or "claude-tour", root = tour.root or vim.fn.getcwd(), steps = {} }
+  if tour.root ~= nil and type(tour.root) ~= "string" then
+    return nil, "'root' must be a string"
+  end
+  local out = { title = tour.title or "claude-tour", root = absolute(tour.root or vim.fn.getcwd()), steps = {} }
+  local function is_line(v)
+    return type(v) == "number" and v >= 1 and math.floor(v) == v
+  end
   for i, step in ipairs(tour.steps) do
-    if type(step.file) ~= "string" or type(step.line) ~= "number" then
-      return nil, ("step %d needs 'file' (string) and 'line' (number)"):format(i)
+    if type(step) ~= "table" or type(step.file) ~= "string" or not is_line(step.line) then
+      return nil, ("step %d needs 'file' (string) and 'line' (integer >= 1)"):format(i)
     end
     local text = step.text
     if type(text) == "string" then
       text = { text }
     end
-    if type(text) ~= "table" or #text == 0 then
+    local ok = type(text) == "table" and #text > 0
+    for _, item in ipairs(ok and text or {}) do
+      ok = ok and type(item) == "string"
+    end
+    if not ok then
       return nil, ("step %d needs 'text' (string or list of strings)"):format(i)
     end
-    if step.end_line ~= nil and (type(step.end_line) ~= "number" or step.end_line < step.line) then
-      return nil, ("step %d: 'end_line' must be a number >= 'line'"):format(i)
+    if step.end_line ~= nil and (not is_line(step.end_line) or step.end_line < step.line) then
+      return nil, ("step %d: 'end_line' must be an integer >= 'line'"):format(i)
     end
     table.insert(out.steps, { file = step.file, line = step.line, end_line = step.end_line, text = text })
   end
@@ -189,6 +207,61 @@ function M.clear()
   state = { tour = nil, marks = {}, current = 0, visible = true }
 end
 
+-- True while attach_step() loads a file: on_read() must not handle the BufReadPost of that load.
+local loading = false
+
+-- (Re)create the extmarks of step i at the lines in the tour. Loads the file if needed.
+local function attach_step(i)
+  local step = state.tour.steps[i]
+  local old = state.marks[i]
+  if old and vim.api.nvim_buf_is_valid(old.buf) then
+    pcall(vim.api.nvim_buf_del_extmark, old.buf, ns, old.id)
+    for _, sign_id in ipairs(old.signs) do
+      pcall(vim.api.nvim_buf_del_extmark, old.buf, ns, sign_id)
+    end
+  end
+  local path = resolve(state.tour.root, step.file)
+  local buf = vim.fn.bufadd(path)
+  if not vim.api.nvim_buf_is_loaded(buf) then
+    loading = true
+    local ok, err = pcall(vim.fn.bufload, buf)
+    loading = false
+    if not ok then
+      error(err)
+    end
+  end
+  local count = vim.api.nvim_buf_line_count(buf)
+  local row = math.max(0, math.min(step.line, count) - 1)
+  local last = math.max(row, math.min(step.end_line or step.line, count) - 1)
+  local id = vim.api.nvim_buf_set_extmark(buf, ns, row, 0, {})
+  -- One extmark per line, so the sign of each line moves with that line.
+  local signs = {}
+  for r = row, last do
+    table.insert(signs, vim.api.nvim_buf_set_extmark(buf, ns, r, 0, {}))
+  end
+  state.marks[i] = { path = path, buf = buf, id = id, signs = signs }
+end
+
+-- A file of the tour was read again: reloaded after a change on disk (:e!, 'autoread', :checktime) or opened
+-- again after :bdelete / :bwipeout. Its old extmarks are gone or point to old rows, so set them again from the
+-- lines in the tour. Edits made in the buffer since the tour was loaded are lost for these positions.
+local function on_read(args)
+  if not state.tour or loading then
+    return
+  end
+  local path = absolute(vim.api.nvim_buf_get_name(args.buf))
+  local changed = false
+  for i, mark in ipairs(state.marks) do
+    if mark.path == path then
+      attach_step(i)
+      changed = true
+    end
+  end
+  if changed then
+    render()
+  end
+end
+
 -- Load a tour from a Lua table: { title = ..., root = ..., steps = { { file, line, text }, ... } }.
 -- A relative 'file' is taken relative to 'root' (default: the current working directory).
 function M.load(tour)
@@ -204,28 +277,19 @@ function M.load(tour)
     if vim.fn.filereadable(path) == 0 then
       notify(("step %d: cannot read %s"):format(i, path), vim.log.levels.WARN)
     end
-    local buf = vim.fn.bufadd(path)
-    vim.fn.bufload(buf)
-    local count = vim.api.nvim_buf_line_count(buf)
-    local row = math.max(0, math.min(step.line, count) - 1)
-    local last = math.max(row, math.min(step.end_line or step.line, count) - 1)
-    local id = vim.api.nvim_buf_set_extmark(buf, ns, row, 0, {})
-    -- One extmark per line, so the sign of each line moves with that line.
-    local signs = {}
-    for r = row, last do
-      table.insert(signs, vim.api.nvim_buf_set_extmark(buf, ns, r, 0, {}))
-    end
-    state.marks[i] = { buf = buf, id = id, signs = signs }
+    attach_step(i)
   end
   vim.api.nvim_create_autocmd({ "CursorMoved", "BufEnter" }, { group = follow_group, callback = follow_cursor })
+  vim.api.nvim_create_autocmd("BufReadPost", { group = follow_group, callback = on_read })
   render()
   notify(("%s: %d steps loaded"):format(t.title, #t.steps))
   return true
 end
 
--- Path of a tour file: a name without a path is looked up in config.tour_dir, ".json" is added if missing.
+-- Path of a tour file: a name without "/" is looked up in config.tour_dir, ".json" is added unless the name
+-- ends in ".json". Only "~" and environment variables are expanded, not "%" or "#".
 local function tour_path(name)
-  local path = vim.fn.expand(name)
+  local path = vim.fs.normalize(name)
   if not path:match("%.json$") then
     path = path .. ".json"
   end
@@ -258,7 +322,7 @@ function M.save_file(name)
   local steps = {}
   for i, step in ipairs(state.tour.steps) do
     local buf, row = position(i)
-    local file = buf and vim.api.nvim_buf_get_name(buf) or resolve(root, step.file)
+    local file = buf and absolute(vim.api.nvim_buf_get_name(buf)) or resolve(root, step.file)
     if file:sub(1, #root + 1) == root .. "/" then
       file = file:sub(#root + 2)
     end
@@ -302,14 +366,15 @@ function M.goto_step(i)
     return
   end
   local n = #state.tour.steps
-  if i < 1 or i > n then
-    notify(("no step %d (1..%d)"):format(i, n), vim.log.levels.WARN)
+  if type(i) ~= "number" or math.floor(i) ~= i or i < 1 or i > n then
+    notify(("no step %s (1..%d)"):format(tostring(i), n), vim.log.levels.WARN)
     return
   end
   local buf, row = position(i)
   if not buf then
-    notify(("step %d: its buffer is gone, load the tour again"):format(i), vim.log.levels.WARN)
-    return
+    -- The buffer was unloaded or wiped out: set the marks again from the lines in the tour.
+    attach_step(i)
+    buf, row = position(i)
   end
   state.current = i
   state.visible = true
@@ -317,6 +382,7 @@ function M.goto_step(i)
   if vim.bo.buftype == "quickfix" then
     vim.cmd("wincmd p")
   end
+  vim.bo[buf].buflisted = true
   vim.cmd("buffer " .. buf)
   vim.api.nvim_win_set_cursor(0, { row + 1, 0 })
   vim.cmd("normal! zz")
