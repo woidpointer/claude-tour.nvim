@@ -114,6 +114,18 @@ nvim --server /tmp/nvim.sock --remote-expr \
   "luaeval('require(\"claude_tour\").load(dofile(_A))', '/abs/path/tour.lua')"
 ```
 
+## Use with Claude Code
+
+`skills/claude-tour/SKILL.md` is an agent skill. It tells Claude Code how to write a tour and load it into
+your Neovim. Link it into your skills directory:
+
+```bash
+ln -s /path/to/claude-tour.nvim/skills/claude-tour ~/.claude/skills/claude-tour
+```
+
+Then start Neovim with `--listen <socket>` and ask Claude to show something "in nvim". Claude asks for the
+socket path.
+
 ## Configuration
 
 | Option | Default | Meaning |
